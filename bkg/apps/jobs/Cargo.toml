@@ -1,0 +1,28 @@
+[package]
+name = "bkg-jobs"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true, features = ["full"] }
+
+# Shared dependencies
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Redis for queue worker
+redis = { workspace = true }
+
+# Database
+sqlx = { workspace = true }
+
+# Utilities
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
