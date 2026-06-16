@@ -1,0 +1,150 @@
+services:
+  postgres:
+    # PostgreSQL 16 with pgvector enabled for future RAG workloads.
+    # Local-only port: 127.0.0.1:5432 -> container 5432.
+    image: pgvector/pgvector:pg16
+    container_name: bkg-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bkg}
+      POSTGRES_USER: ${POSTGRES_USER:-bkg}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-local-postgres-password}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - bkg-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  redis:
+    # Redis 7 for BullMQ queues and caching.
+    # Local-only port: 127.0.0.1:6379 -> container 6379.
+    image: redis:7-alpine
+    container_name: bkg-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-512mb}
+      - --maxmemory-policy
+      - allkeys-lru
+      - --requirepass
+      - ${REDIS_PASSWORD:-change-me-local-redis-password}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-change-me-local-redis-password}
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - bkg-network
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  minio:
+    # MinIO S3-compatible object storage for BKG assets.
+    # Local-only API port: 127.0.0.1:9000 -> container 9000.
+    # Local-only console port: 127.0.0.1:9001 -> container 9001.
+    image: minio/minio:latest
+    container_name: bkg-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-change-me-local-minio-root-password}
+    ports:
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+      - minio-config:/root/.minio
+    networks:
+      - bkg-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  minio-create-bucket:
+    # One-shot bucket bootstrap for the default asset bucket.
+    # No ports are exposed; it runs on the isolated BKG network only.
+    image: minio/mc:latest
+    container_name: bkg-minio-create-bucket
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-change-me-local-minio-root-password}
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 \"$${MINIO_ROOT_USER}\" \"$${MINIO_ROOT_PASSWORD}\" &&
+      mc mb --ignore-existing local/$${MINIO_BUCKET:-bkg-assets}
+      "
+    networks:
+      - bkg-network
+    restart: "no"
+
+  qdrant:
+    # Optional vector search service for future RAG experiments.
+    # Start with: docker compose --profile vector-search up -d.
+    # Local-only HTTP port: 127.0.0.1:6333 -> container 6333.
+    # Local-only gRPC port: 127.0.0.1:6334 -> container 6334.
+    image: qdrant/qdrant:latest
+    container_name: bkg-qdrant
+    restart: unless-stopped
+    profiles:
+      - vector-search
+    environment:
+      QDRANT__SERVICE__HTTP_PORT: "6333"
+      QDRANT__SERVICE__GRPC_PORT: "6334"
+      QDRANT__SERVICE__API_KEY: ${QDRANT__SERVICE__API_KEY:-}
+    ports:
+      - "127.0.0.1:${QDRANT_PORT:-6333}:6333"
+      - "127.0.0.1:${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant-storage:/qdrant/storage
+      - qdrant-snapshots:/qdrant/snapshots
+    networks:
+      - bkg-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  postgres-data:
+    # PostgreSQL table data and pgvector indexes.
+  redis-data:
+    # Redis append-only file for queue and cache durability.
+  minio-data:
+    # MinIO object data for BKG assets.
+  minio-config:
+    # MinIO server configuration and identity metadata.
+  qdrant-storage:
+    # Optional Qdrant vector index and collection data.
+  qdrant-snapshots:
+    # Optional Qdrant collection snapshots.
+
+networks:
+  bkg-network:
+    # Dedicated isolated network for all BKG infrastructure services.
+    name: bkg-network
+    driver: bridge
+    internal: true
